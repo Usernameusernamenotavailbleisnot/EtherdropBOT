@@ -4,5 +4,6 @@
 ## TUTORIAL IN GROUP : [Join Here](https://t.me/sansxgroup)
 
 ## Features
-- Auto Clear Task
+- Auto Clear Task ( Skip Completed Task )
 - Auto Claim Daily
+- Proxy Support 

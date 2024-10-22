@@ -1,11 +1,12 @@
-import random
-import requests
+import base64
 import json
-import time
-from datetime import datetime, timedelta
 import os
+import random
 import sys
+import time
 from urllib.parse import parse_qs, unquote
+import requests
+from datetime import datetime, timedelta
 from colorama import Fore, Style, init
 
 # Initialize colorama
@@ -17,6 +18,21 @@ def print_(word):
     now = datetime.now().isoformat(" ").split(".")[0]
     print(f"[{now}] | {word}")
 
+def clear_terminal():
+    os.system('cls' if os.name == 'nt' else 'clear')
+    
+def load_query():
+    try:
+        with open('ether_query.txt', 'r') as f:
+            queries = [line.strip() for line in f.readlines()]
+        return queries
+    except FileNotFoundError:
+        print("File ether_query.txt not found.")
+        return []
+    except Exception as e:
+        print("Failed get Query :", str(e))
+        return []
+
 def load_proxies():
     try:
         with open('proxies.txt', 'r') as f:
@@ -25,7 +41,12 @@ def load_proxies():
         print_("proxies.txt file not found. Running without proxies.")
         return []
 
-proxies = load_proxies()
+def parse_query(query: str):
+    parsed_query = parse_qs(query)
+    parsed_query = {k: v[0] for k, v in parsed_query.items()}
+    user_data = json.loads(unquote(parsed_query['user']))
+    parsed_query['user'] = user_data
+    return parsed_query
 
 def get_ip_info():
     try:
@@ -72,8 +93,19 @@ def make_request(method, url, headers, json=None, data=None, proxy_dict=None):
             retry_count += 1
             continue
 
-class Ether:
+def print_delay(delay):
+    print()
+    while delay > 0:
+        now = datetime.now().isoformat(" ").split(".")[0]
+        hours, remainder = divmod(delay, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        sys.stdout.write(f"\r[{now}] | Waiting Time: {round(hours)} hours, {round(minutes)} minutes, and {round(seconds)} seconds")
+        sys.stdout.flush()
+        time.sleep(1)
+        delay -= 1
+    print_("\nWaiting Done, Starting....\n")
 
+class Ether:
     def __init__(self):
         self.header = {
             "accept": "application/json",
@@ -124,15 +156,8 @@ class Ether:
             else:
                 print_("Daily Bonus Claimed")
 
-    def active_task_list(self):
-        try:
-            return self._make_authenticated_request("GET", "/quest")
-        except requests.RequestException:
-            print(f"{Fore.RED+Style.BRIGHT}[ Task ]: Failed to get active task list{Style.RESET_ALL}")
-            return None
-
     def check_tasks(self):
-        tasks = self.active_task_list()
+        tasks = self._make_authenticated_request("GET", "/quest")
         if tasks is None:
             return
 
@@ -140,13 +165,10 @@ class Ether:
             group_name = task_group.get('name', '')
             quests = task_group.get('quests', [])
             
-            active_quests = [
-                quest for quest in quests 
-                if quest.get('status') == 'NEW'
-            ]
+            active_quests = [quest for quest in quests if quest.get('status') == 'NEW']
             
             if not active_quests:
-                continue  # Lewati grup tugas ini jika tidak ada tugas aktif
+                continue
             
             print_(f"== Title Task : {group_name} ==")
             
@@ -204,51 +226,69 @@ class Ether:
                     print_(f"Open {shorts} in {coin.get('symbol')} at Price {coin.get('price')} time {hours} Hours")
                     break
 
-def clear_terminal():
-    os.system('cls' if os.name == 'nt' else 'clear')
-    
-def load_query():
-    try:
-        with open('ether_query.txt', 'r') as f:
-            queries = [line.strip() for line in f.readlines()]
-        return queries
-    except FileNotFoundError:
-        print("File ether_query.txt not found.")
-        return []
-    except Exception as e:
-        print("Failed get Query :", str(e))
-        return []
+    def claim_order(self, order_id):
+        response = self._make_authenticated_request('PUT', f'/order/{order_id}/claim')
+        if response is not None:
+            print_(f"Successfully claimed order {order_id}")
+            return response
+        return None
 
-def parse_query(query: str):
-    parsed_query = parse_qs(query)
-    parsed_query = {k: v[0] for k, v in parsed_query.items()}
-    user_data = json.loads(unquote(parsed_query['user']))
-    parsed_query['user'] = user_data
-    return parsed_query
+    def mark_checked(self, order_id):
+        response = self._make_authenticated_request('PUT', f'/order/{order_id}/markUserChecked')
+        if response is not None:
+            print_(f"Marked order {order_id} as checked")
+            return response
+        return None
 
-def print_delay(delay):
-    print()
-    while delay > 0:
-        now = datetime.now().isoformat(" ").split(".")[0]
-        hours, remainder = divmod(delay, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        sys.stdout.write(f"\r[{now}] | Waiting Time: {round(hours)} hours, {round(minutes)} minutes, and {round(seconds)} seconds")
-        sys.stdout.flush()
-        time.sleep(1)
-        delay -= 1
-    print_("\nWaiting Done, Starting....\n")
-       
+    def process_order(self, order, detail_coin, input_coin, input_order, period_id):
+        status = order.get('status')
+        order_id = order.get('id')
+        coin = order.get('coin', {})
+        
+        if status == "CLAIM_AVAILABLE":
+            print_(f"Claiming successful prediction for {coin.get('symbol')} | Reward: {order.get('reward')}")
+            self.claim_order(order_id)
+            return self.open_new_position(detail_coin, input_coin, input_order, period_id)
+        elif status == "NOT_WIN":
+            print_(f"Processing failed prediction for {coin.get('symbol')}")
+            self.mark_checked(order_id)
+            return self.open_new_position(detail_coin, input_coin, input_order, period_id)
+        return None
+
+    def open_new_position(self, detail_coin, input_coin, input_order, period_id):
+        status_options = [True, False]  # True for Short, False for Long
+        
+        if input_coin == 'y':
+            coins = random.choice(detail_coin)
+        else:
+            coins = detail_coin[0]  # Default to first coin (BTC)
+
+        if input_order == 'l':
+            status_order = status_options[1]  # Long
+        elif input_order == 's':
+            status_order = status_options[0]  # Short
+        else:
+            status_order = random.choice(status_options)  # Random
+
+        coin_id = coins.get('id')
+        payload = {'coinId': coin_id, 'short': status_order, 'periodId': period_id}
+        return self.post_order(payload)
+
 def main():
     input_coin = input("random choice coin y/n (BTC default)  : ").strip().lower()
     input_order = input("open order l(long), s(short), r(random)  : ").strip().lower()
+    auto_claim = input("Enable auto-claim and reopen (y/n): ").strip().lower() == 'y'
+    
     while True:
         start_time = time.time()
         clear_terminal()
         queries = load_query()
-        sum = len(queries)
+        proxies = load_proxies()
+        total_accounts = len(queries)
         ether = Ether()
+
         for index, query in enumerate(queries, start=1):
-            print_(f"SxG========= Account {index}/{sum} =========SxG")
+            print_(f"SxG========= Account {index}/{total_accounts} =========SxG")
             
             # Check IP once per account
             proxy = random.choice(proxies) if proxies else None
@@ -263,36 +303,30 @@ def main():
                 ether.daily_bonus()
                 ether.claim_ref()
                 data_order = ether.get_order()
-                if data_order is not None:
-                    totalScore = data_order.get('totalScore',0)
-                    results = data_order.get('results',{})
-                    print_(f"Result Game : {results.get('orders',0)} Order | {results.get('wins',0)} Wins | {results.get('loses',0)} Loses | {results.get('winRate',0.0)} Winrate")
-                    list_periods = data_order.get('periods',[])
-                    detail_coin = ether.get_coins(input_order)
-                    for list in list_periods:
-                        period = list.get('period',{})
-                        unlockThreshold = period.get('unlockThreshold',0)
-                        detail_order = list.get('order',{})
-                        id = period.get('id',1)
-                        if totalScore >= unlockThreshold:
-                            status = [True, False]
-                            if input_coin =='y':
-                                coins = random.choice(detail_coin)
-                            else:
-                                coins = detail_coin[0]
 
-                            if input_order == 'l':
-                                status_order = status[1]
-                            elif input_order == 's':
-                                status_order = status[0]
-                            else:
-                                status_order = random.choice(status)
-                            if detail_order is None:
-                                coin_id = coins.get('id')
-                                payload = {'coinId': coin_id, 'short': status_order, 'periodId': id}
-                                ether.post_order(payload)
-                        
-                ether.check_tasks()                
+                if data_order is not None:
+                    totalScore = data_order.get('totalScore', 0)
+                    results = data_order.get('results', {})
+                    print_(f"Result Game : {results.get('orders',0)} Order | {results.get('wins',0)} Wins | {results.get('loses',0)} Loses | {results.get('winRate',0.0)} Winrate")
+                    
+                    list_periods = data_order.get('periods', [])
+                    detail_coin = ether.get_coins(input_order)
+
+                    for period_data in list_periods:
+                        period = period_data.get('period', {})
+                        unlock_threshold = period.get('unlockThreshold', 0)
+                        current_order = period_data.get('order', {})
+                        period_id = period.get('id', 1)
+
+                        if totalScore >= unlock_threshold:
+                            if auto_claim and current_order:
+                                # Process existing order if auto-claim is enabled
+                                ether.process_order(current_order, detail_coin, input_coin, input_order, period_id)
+                            elif not current_order:
+                                # Open new position if no current order exists
+                                ether.open_new_position(detail_coin, input_coin, input_order, period_id)
+                
+                ether.check_tasks()
 
         end_time = time.time()
         processing_time = end_time - start_time

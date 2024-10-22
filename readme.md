@@ -6,4 +6,5 @@
 ## Features
 - Auto Clear Task ( Skip Completed Task )
 - Auto Claim Daily
-- Proxy Support 
+- Proxy Support
+- Auto Claim Prediction

@@ -8,15 +8,20 @@ from urllib.parse import parse_qs, unquote
 import requests
 from datetime import datetime, timedelta
 from colorama import Fore, Style, init
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+import math
 
 # Initialize colorama
 init()
 
 BASE_URL = "https://api.miniapp.dropstab.com/api"
+print_lock = Lock()
 
 def print_(word):
     now = datetime.now().isoformat(" ").split(".")[0]
-    print(f"[{now}] | {word}")
+    with print_lock:
+        print(f"[{now}] | {word}")
 
 def clear_terminal():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -33,6 +38,7 @@ def load_query():
         print("Failed get Query :", str(e))
         return []
 
+
 def load_proxies():
     try:
         with open('proxies.txt', 'r') as f:
@@ -41,6 +47,24 @@ def load_proxies():
         print_("proxies.txt file not found. Running without proxies.")
         return []
 
+def format_proxy(proxy):
+    """Format proxy string correctly"""
+    if not proxy:
+        return None
+    
+    # Remove any whitespace
+    proxy = proxy.strip()
+    
+    # Check if proxy already has protocol
+    if proxy.startswith(('http://', 'https://')):
+        return {'http': proxy, 'https': proxy}
+    
+    # Add protocol if not present
+    return {
+        'http': f'http://{proxy}',
+        'https': f'http://{proxy}'
+    }
+
 def parse_query(query: str):
     parsed_query = parse_qs(query)
     parsed_query = {k: v[0] for k, v in parsed_query.items()}
@@ -48,15 +72,22 @@ def parse_query(query: str):
     parsed_query['user'] = user_data
     return parsed_query
 
-def get_ip_info():
+def get_ip_info(proxy_dict=None):
     try:
-        response = requests.get('https://api.country.is', timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(
+            'http://ip-api.com/json', 
+            headers=headers,
+            proxies=proxy_dict, 
+            timeout=10,
+            verify=False
+        )
         if response.status_code == 200:
             data = response.json()
-            return data.get('ip', 'Unknown'), data.get('country', 'Unknown')
-        else:
-            print_(f"Failed to get IP info. Status code: {response.status_code}")
-            return 'Unknown', 'Unknown'
+            return data.get('query', 'Unknown'), data.get('country', 'Unknown')
+        return 'Unknown', 'Unknown'
     except Exception as e:
         print_(f"Error getting IP info: {e}")
         return 'Unknown', 'Unknown'
@@ -99,8 +130,9 @@ def print_delay(delay):
         now = datetime.now().isoformat(" ").split(".")[0]
         hours, remainder = divmod(delay, 3600)
         minutes, seconds = divmod(remainder, 60)
-        sys.stdout.write(f"\r[{now}] | Waiting Time: {round(hours)} hours, {round(minutes)} minutes, and {round(seconds)} seconds")
-        sys.stdout.flush()
+        with print_lock:
+            sys.stdout.write(f"\r[{now}] | Waiting Time: {round(hours)} hours, {round(minutes)} minutes, and {round(seconds)} seconds")
+            sys.stdout.flush()
         time.sleep(1)
         delay -= 1
     print_("\nWaiting Done, Starting....\n")
@@ -273,11 +305,96 @@ class Ether:
         coin_id = coins.get('id')
         payload = {'coinId': coin_id, 'short': status_order, 'periodId': period_id}
         return self.post_order(payload)
+def test_proxy(proxy_dict):
+    if not proxy_dict:
+        return False
+        
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(
+            'http://ip-api.com/json', 
+            headers=headers,
+            proxies=proxy_dict, 
+            timeout=10,
+            verify=False
+        )
+        if response.status_code == 200:
+            data = response.json()
+            print_(f"Proxy working. IP: {data.get('query')} Country: {data.get('country')}")
+            return True
+        return False
+    except Exception as e:
+        print_(f"Proxy test failed: {str(e)}")
+        return False
+
+
+def process_account(account_data):
+    query, index, total_accounts, input_coin, input_order, auto_claim, proxies = account_data
+    
+    print_(f"SxG========= Account {index}/{total_accounts} =========SxG")
+    
+    # Setup proxy
+    if proxies:
+        proxy = random.choice(proxies)
+        proxy_dict = format_proxy(proxy)
+        print_(f"Selected proxy: {proxy}")
+    else:
+        proxy_dict = None
+    
+    # Create Ether instance with proxy
+    ether = Ether()
+    ether.proxy_dict = proxy_dict
+    
+    # Check IP using proxy
+    ip, country = get_ip_info(proxy_dict)
+    print_(f"Current IP: {ip} | Country: {country}")
+    
+    token = ether.get_token(query)
+    if token is not None:
+        user_info = ether.get_user_info()
+        print_(f"TGID : {user_info.get('tgId','')} | Username : {user_info.get('tgUsername','None')} | Balance : {user_info.get('balance',0)}")
+        ether.daily_bonus()
+        ether.claim_ref()
+        data_order = ether.get_order()
+
+        if data_order is not None:
+            totalScore = data_order.get('totalScore', 0)
+            results = data_order.get('results', {})
+            print_(f"Result Game : {results.get('orders',0)} Order | {results.get('wins',0)} Wins | {results.get('loses',0)} Loses | {results.get('winRate',0.0)} Winrate")
+            
+            list_periods = data_order.get('periods', [])
+            detail_coin = ether.get_coins(input_order)
+
+            for period_data in list_periods:
+                period = period_data.get('period', {})
+                unlock_threshold = period.get('unlockThreshold', 0)
+                current_order = period_data.get('order', {})
+                period_id = period.get('id', 1)
+
+                if totalScore >= unlock_threshold:
+                    if auto_claim and current_order:
+                        ether.process_order(current_order, detail_coin, input_coin, input_order, period_id)
+                    elif not current_order:
+                        ether.open_new_position(detail_coin, input_coin, input_order, period_id)
+        
+        ether.check_tasks()
 
 def main():
     input_coin = input("random choice coin y/n (BTC default)  : ").strip().lower()
     input_order = input("open order l(long), s(short), r(random)  : ").strip().lower()
     auto_claim = input("Enable auto-claim and reopen (y/n): ").strip().lower() == 'y'
+    
+    # New prompt for number of threads
+    while True:
+        try:
+            num_threads = int(input("Enter number of threads (1-10): ").strip())
+            if 1 <= num_threads <= 10:
+                break
+            print_("Please enter a number between 1 and 10")
+        except ValueError:
+            print_("Please enter a valid number")
     
     while True:
         start_time = time.time()
@@ -285,56 +402,37 @@ def main():
         queries = load_query()
         proxies = load_proxies()
         total_accounts = len(queries)
-        ether = Ether()
-
-        for index, query in enumerate(queries, start=1):
-            print_(f"SxG========= Account {index}/{total_accounts} =========SxG")
-            
-            # Check IP once per account
-            proxy = random.choice(proxies) if proxies else None
-            ether.proxy_dict = {'http': proxy, 'https': proxy} if proxy else None
-            ip, country = get_ip_info()
-            print_(f"Current IP: {ip} | Country: {country}")
-            
-            token = ether.get_token(query)
-            if token is not None:
-                user_info = ether.get_user_info()
-                print_(f"TGID : {user_info.get('tgId','')} | Username : {user_info.get('tgUsername','None')} | Balance : {user_info.get('balance',0)}")
-                ether.daily_bonus()
-                ether.claim_ref()
-                data_order = ether.get_order()
-
-                if data_order is not None:
-                    totalScore = data_order.get('totalScore', 0)
-                    results = data_order.get('results', {})
-                    print_(f"Result Game : {results.get('orders',0)} Order | {results.get('wins',0)} Wins | {results.get('loses',0)} Loses | {results.get('winRate',0.0)} Winrate")
-                    
-                    list_periods = data_order.get('periods', [])
-                    detail_coin = ether.get_coins(input_order)
-
-                    for period_data in list_periods:
-                        period = period_data.get('period', {})
-                        unlock_threshold = period.get('unlockThreshold', 0)
-                        current_order = period_data.get('order', {})
-                        period_id = period.get('id', 1)
-
-                        if totalScore >= unlock_threshold:
-                            if auto_claim and current_order:
-                                # Process existing order if auto-claim is enabled
-                                ether.process_order(current_order, detail_coin, input_coin, input_order, period_id)
-                            elif not current_order:
-                                # Open new position if no current order exists
-                                ether.open_new_position(detail_coin, input_coin, input_order, period_id)
-                
-                ether.check_tasks()
-
+        
+        # Adjust number of threads if more than accounts
+        actual_threads = min(num_threads, total_accounts)
+        if actual_threads < num_threads:
+            print_(f"Adjusting to {actual_threads} threads as there are only {total_accounts} accounts")
+        
+        # Prepare account data for threading
+        account_data = [
+            (query, idx + 1, total_accounts, input_coin, input_order, auto_claim, proxies)
+            for idx, query in enumerate(queries)
+        ]
+        
+        # Process accounts in parallel
+        with ThreadPoolExecutor(max_workers=actual_threads) as executor:
+            list(executor.map(process_account, account_data))
+        
         end_time = time.time()
         processing_time = end_time - start_time
-        delay = 24 * 3600 - processing_time  # 24 hours minus processing time
+        delay = 24 * 3600 - processing_time
+        
         if delay > 0:
             print_delay(delay)
         else:
             print_("Processing took longer than 24 hours. Starting next cycle immediately.")
 
 if __name__ == "__main__":
-     main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print_("\nScript terminated by user")
+        sys.exit(0)
+    except Exception as e:
+        print_(f"An unexpected error occurred: {str(e)}")
+        sys.exit(1)

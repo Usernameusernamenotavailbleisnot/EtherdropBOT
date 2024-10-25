@@ -8,3 +8,4 @@
 - Auto Claim Daily
 - Proxy Support
 - Auto Claim Prediction
+- Multi Thread

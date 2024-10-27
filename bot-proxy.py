@@ -81,7 +81,7 @@ def get_ip_info(proxy_dict=None):
             'http://ip-api.com/json', 
             headers=headers,
             proxies=proxy_dict, 
-            timeout=10,
+            timeout=30,
             verify=False
         )
         if response.status_code == 200:
@@ -98,11 +98,11 @@ def make_request(method, url, headers, json=None, data=None, proxy_dict=None):
         time.sleep(2)
         try:
             if method.upper() == "GET":
-                response = requests.get(url, headers=headers, json=json, proxies=proxy_dict, timeout=10)
+                response = requests.get(url, headers=headers, json=json, proxies=proxy_dict, timeout=30)
             elif method.upper() == "POST":
-                response = requests.post(url, headers=headers, json=json, data=data, proxies=proxy_dict, timeout=10)
+                response = requests.post(url, headers=headers, json=json, data=data, proxies=proxy_dict, timeout=30)
             elif method.upper() == "PUT":
-                response = requests.put(url, headers=headers, json=json, data=data, proxies=proxy_dict, timeout=10)
+                response = requests.put(url, headers=headers, json=json, data=data, proxies=proxy_dict, timeout=30)
             else:
                 raise ValueError("Invalid method.")
             
@@ -295,12 +295,37 @@ class Ether:
         else:
             coins = detail_coin[0]  # Default to first coin (BTC)
 
-        if input_order == 'l':
-            status_order = status_options[1]  # Long
-        elif input_order == 's':
-            status_order = status_options[0]  # Short
+        # Get sentiment data for the selected coin
+        coin_stats = self.get_detail_coin(coins['id'])
+        if coin_stats:
+            short_percentage = coin_stats.get('short', 0)
+            long_percentage = coin_stats.get('long', 0)
+            print_(f"Sentiment Analysis for {coins['symbol']}:")
+            print_(f"Long: {long_percentage}% | Short: {short_percentage}%")
+            
+            if input_order == 'l':
+                status_order = status_options[1]  # Long
+            elif input_order == 's':
+                status_order = status_options[0]  # Short
+            elif input_order == 'm':  # New option for majority-based decision
+                if long_percentage > short_percentage:
+                    status_order = status_options[1]  # Long
+                    print_(f"Choosing Long position based on majority sentiment ({long_percentage}% > {short_percentage}%)")
+                else:
+                    status_order = status_options[0]  # Short
+                    print_(f"Choosing Short position based on majority sentiment ({short_percentage}% > {long_percentage}%)")
+            elif input_order == 'c':  # New option for counter-majority decision
+                if long_percentage > short_percentage:
+                    status_order = status_options[0]  # Short
+                    print_(f"Choosing Short position against majority sentiment ({long_percentage}% > {short_percentage}%)")
+                else:
+                    status_order = status_options[1]  # Long
+                    print_(f"Choosing Long position against majority sentiment ({short_percentage}% > {long_percentage}%)")
+            else:
+                status_order = random.choice(status_options)  # Random
         else:
-            status_order = random.choice(status_options)  # Random
+            print_("Failed to get sentiment data, using random choice")
+            status_order = random.choice(status_options)
 
         coin_id = coins.get('id')
         payload = {'coinId': coin_id, 'short': status_order, 'periodId': period_id}
@@ -317,7 +342,7 @@ def test_proxy(proxy_dict):
             'http://ip-api.com/json', 
             headers=headers,
             proxies=proxy_dict, 
-            timeout=10,
+            timeout=30,
             verify=False
         )
         if response.status_code == 200:
@@ -383,7 +408,7 @@ def process_account(account_data):
 
 def main():
     input_coin = input("random choice coin y/n (BTC default)  : ").strip().lower()
-    input_order = input("open order l(long), s(short), r(random)  : ").strip().lower()
+    input_order = input("open order l(long), s(short), r(random), m(majority), c(counter-majority)  : ").strip().lower()
     auto_claim = input("Enable auto-claim and reopen (y/n): ").strip().lower() == 'y'
     
     # New prompt for number of threads

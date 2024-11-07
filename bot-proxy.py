@@ -11,6 +11,10 @@ from colorama import Fore, Style, init
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import math
+import urllib3
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Initialize colorama
 init()
@@ -32,12 +36,11 @@ def load_query():
             queries = [line.strip() for line in f.readlines()]
         return queries
     except FileNotFoundError:
-        print("File ether_query.txt not found.")
+        print_("File ether_query.txt not found.")
         return []
     except Exception as e:
-        print("Failed get Query :", str(e))
+        print_("Failed get Query:", str(e))
         return []
-
 
 def load_proxies():
     try:
@@ -66,11 +69,15 @@ def format_proxy(proxy):
     }
 
 def parse_query(query: str):
-    parsed_query = parse_qs(query)
-    parsed_query = {k: v[0] for k, v in parsed_query.items()}
-    user_data = json.loads(unquote(parsed_query['user']))
-    parsed_query['user'] = user_data
-    return parsed_query
+    try:
+        parsed_query = parse_qs(query)
+        parsed_query = {k: v[0] for k, v in parsed_query.items()}
+        user_data = json.loads(unquote(parsed_query['user']))
+        parsed_query['user'] = user_data
+        return parsed_query
+    except Exception as e:
+        print_(f"Error parsing query: {str(e)}")
+        return None
 
 def get_ip_info(proxy_dict=None):
     try:
@@ -94,48 +101,65 @@ def get_ip_info(proxy_dict=None):
 
 def make_request(method, url, headers, json=None, data=None, proxy_dict=None):
     retry_count = 0
-    while True:
-        time.sleep(2)
+    max_retries = 4
+    while retry_count <= max_retries:
         try:
-            if method.upper() == "GET":
-                response = requests.get(url, headers=headers, json=json, proxies=proxy_dict, timeout=30)
-            elif method.upper() == "POST":
-                response = requests.post(url, headers=headers, json=json, data=data, proxies=proxy_dict, timeout=30)
-            elif method.upper() == "PUT":
-                response = requests.put(url, headers=headers, json=json, data=data, proxies=proxy_dict, timeout=30)
-            else:
-                raise ValueError("Invalid method.")
+            time.sleep(2)  # Rate limiting
+            kwargs = {
+                'headers': headers,
+                'proxies': proxy_dict,
+                'timeout': 30,
+                'verify': False
+            }
+            
+            if json is not None:
+                kwargs['json'] = json
+            if data is not None:
+                kwargs['data'] = data
+                
+            response = requests.request(method.upper(), url, **kwargs)
             
             if response.status_code >= 500:
-                if retry_count >= 4:
-                    print_(f"Status Code: {response.status_code} | {response.text}")
+                if retry_count >= max_retries:
+                    print_(f"Server error (status {response.status_code}): {response.text}")
                     return None
                 retry_count += 1
                 continue
-            elif response.status_code >= 400:
-                print_(f"Status Code: {response.status_code} | {response.text}")
+                
+            if response.status_code >= 400:
+                print_(f"Client error (status {response.status_code}): {response.text}")
                 return None
-            elif response.status_code >= 200:
-                return response
+                
+            return response
+            
         except requests.exceptions.RequestException as e:
             print_(f"Request failed: {e}")
-            if retry_count >= 4:
+            if retry_count >= max_retries:
+                return None
+            retry_count += 1
+            continue
+        except Exception as e:
+            print_(f"Unexpected error: {e}")
+            if retry_count >= max_retries:
                 return None
             retry_count += 1
             continue
 
 def print_delay(delay):
-    print()
-    while delay > 0:
-        now = datetime.now().isoformat(" ").split(".")[0]
-        hours, remainder = divmod(delay, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        with print_lock:
-            sys.stdout.write(f"\r[{now}] | Waiting Time: {round(hours)} hours, {round(minutes)} minutes, and {round(seconds)} seconds")
-            sys.stdout.flush()
-        time.sleep(1)
-        delay -= 1
-    print_("\nWaiting Done, Starting....\n")
+    try:
+        print()
+        while delay > 0:
+            now = datetime.now().isoformat(" ").split(".")[0]
+            hours, remainder = divmod(delay, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            with print_lock:
+                sys.stdout.write(f"\r[{now}] | Waiting Time: {round(hours)} hours, {round(minutes)} minutes, and {round(seconds)} seconds")
+                sys.stdout.flush()
+            time.sleep(1)
+            delay -= 1
+        print_("\nWaiting Done, Starting....\n")
+    except Exception as e:
+        print_(f"Error in delay timer: {str(e)}")
 
 class Ether:
     def __init__(self):
@@ -156,12 +180,6 @@ class Ether:
         self.token = None
         self.proxy_dict = None
 
-    def _make_authenticated_request(self, method, endpoint, **kwargs):
-        url = f"{BASE_URL}{endpoint}"
-        headers = {**self.header, 'authorization': f"Bearer {self.token}"}
-        response = make_request(method, url, headers=headers, proxy_dict=self.proxy_dict, **kwargs)
-        return response.json() if response else None
-
     def get_token(self, query):
         url = f"{BASE_URL}/auth/login"
         headers = self.header
@@ -171,10 +189,31 @@ class Ether:
             response = make_request('post', url, headers=headers, json=payload, proxy_dict=self.proxy_dict)
             if response is not None:
                 data = response.json()
-                self.token = data["jwt"]["access"]["token"]
-                return self.token
+                self.token = data.get("jwt", {}).get("access", {}).get("token")
+                if self.token:
+                    return self.token
+                print_("Token not found in response")
+            return None
         except Exception as e:
-            print_(f"Error Detail : {e}")
+            print_(f"Error getting token: {str(e)}")
+            return None
+
+    def _make_authenticated_request(self, method, endpoint, **kwargs):
+        if not self.token:
+            print_("No authentication token available")
+            return None
+            
+        url = f"{BASE_URL}{endpoint}"
+        headers = {**self.header, 'authorization': f"Bearer {self.token}"}
+        
+        try:
+            response = make_request(method, url, headers=headers, proxy_dict=self.proxy_dict, **kwargs)
+            if response is None:
+                return None
+            return response.json()
+        except Exception as e:
+            print_(f"Error in authenticated request to {endpoint}: {str(e)}")
+            return None
 
     def get_user_info(self):
         return self._make_authenticated_request("GET", "/user/current")
@@ -184,7 +223,7 @@ class Ether:
         if response is not None:
             result = response.get('result', False)
             if result:
-                print_(f"Daily login Done. Streaks: {response['streaks']}")
+                print_(f"Daily login Done. Streaks: {response.get('streaks', 0)}")
             else:
                 print_("Daily Bonus Claimed")
 
@@ -202,7 +241,7 @@ class Ether:
             if not active_quests:
                 continue
             
-            print_(f"== Title Task : {group_name} ==")
+            print_(f"== Title Task: {group_name} ==")
             
             for quest in active_quests:
                 name = quest.get('name', '')
@@ -219,19 +258,19 @@ class Ether:
     def verify_task(self, task_id, name):
         response = self._make_authenticated_request('PUT', f'/quest/{task_id}/verify')
         if response is not None:
-            print_(f"Verification Task {name} : {response.get('status','')}")
+            print_(f"Verification Task {name}: {response.get('status', '')}")
 
     def claim_task(self, task_id, name):
         response = self._make_authenticated_request('PUT', f'/quest/{task_id}/claim')
         if response is not None:
-            print_(f"Claim Task {name} : {response.get('status','')}")
+            print_(f"Claim Task {name}: {response.get('status', '')}")
 
     def claim_ref(self):
         print_('Claim Reff Reward')
         response = self._make_authenticated_request('POST', '/refLink/claim')
         if response is not None:
-            totalReward = response.get('totalReward',0)
-            print_(f"Reff claim Done, Reward : {totalReward}")
+            totalReward = response.get('totalReward', 0)
+            print_(f"Reff claim Done, Reward: {totalReward}")
 
     def get_order(self):
         return self._make_authenticated_request('GET', '/order')
@@ -245,91 +284,181 @@ class Ether:
     def post_order(self, payload):
         response = self._make_authenticated_request('POST', '/order', json=payload)
         if response is not None:
-            list_periods = response.get('periods',[])
+            list_periods = response.get('periods', [])
             for data in list_periods:
-                period = data.get('period',[])
+                period = data.get('period', {})
                 hours = period.get('hours')
-                order = data.get('order',{})
-                if len(order) > 0:
+                order = data.get('order', {})
+                if order:
                     shorts = "Long"
                     if order.get('short'):
                         shorts = "Short"
-                    coin = order.get('coin')
+                    coin = order.get('coin', {})
                     print_(f"Open {shorts} in {coin.get('symbol')} at Price {coin.get('price')} time {hours} Hours")
                     break
+        return response
 
     def claim_order(self, order_id):
-        response = self._make_authenticated_request('PUT', f'/order/{order_id}/claim')
-        if response is not None:
-            print_(f"Successfully claimed order {order_id}")
-            return response
-        return None
+        return self._make_authenticated_request('PUT', f'/order/{order_id}/claim')
 
     def mark_checked(self, order_id):
-        response = self._make_authenticated_request('PUT', f'/order/{order_id}/markUserChecked')
-        if response is not None:
-            print_(f"Marked order {order_id} as checked")
-            return response
-        return None
+        return self._make_authenticated_request('PUT', f'/order/{order_id}/markUserChecked')
 
     def process_order(self, order, detail_coin, input_coin, input_order, period_id):
+        if not order:
+            return None
+            
         status = order.get('status')
         order_id = order.get('id')
         coin = order.get('coin', {})
         
-        if status == "CLAIM_AVAILABLE":
-            print_(f"Claiming successful prediction for {coin.get('symbol')} | Reward: {order.get('reward')}")
-            self.claim_order(order_id)
-            return self.open_new_position(detail_coin, input_coin, input_order, period_id)
-        elif status == "NOT_WIN":
-            print_(f"Processing failed prediction for {coin.get('symbol')}")
-            self.mark_checked(order_id)
-            return self.open_new_position(detail_coin, input_coin, input_order, period_id)
+        if not all([status, order_id, coin]):
+            return None
+
+        try:
+            if status == "CLAIM_AVAILABLE":
+                print_(f"Claiming successful prediction for {coin.get('symbol', 'Unknown')} | Reward: {order.get('reward', 0)}")
+                claim_response = self.claim_order(order_id)
+                if claim_response:
+                    return self.open_new_position(detail_coin, input_coin, input_order, period_id)
+            elif status == "NOT_WIN":
+                print_(f"Processing failed prediction for {coin.get('symbol', 'Unknown')}")
+                mark_response = self.mark_checked(order_id)
+                if mark_response:
+                    return self.open_new_position(detail_coin, input_coin, input_order, period_id)
+        except Exception as e:
+            print_(f"Error processing order: {str(e)}")
+        
         return None
 
     def open_new_position(self, detail_coin, input_coin, input_order, period_id):
-        status_options = [True, False]  # True for Short, False for Long
-        
-        if input_coin == 'y':
-            coins = random.choice(detail_coin)
-        else:
-            coins = detail_coin[0]  # Default to first coin (BTC)
+        if not detail_coin:
+            return None
+            
+        try:
+            if input_coin == 'y':
+                coins = random.choice(detail_coin)
+            else:
+                coins = detail_coin[0]  # Default to first coin (BTC)
 
-        # Get sentiment data for the selected coin
-        coin_stats = self.get_detail_coin(coins['id'])
-        if coin_stats:
+            coin_stats = self.get_detail_coin(coins['id'])
+            if not coin_stats:
+                return None
+
             short_percentage = coin_stats.get('short', 0)
             long_percentage = coin_stats.get('long', 0)
+            
             print_(f"Sentiment Analysis for {coins['symbol']}:")
             print_(f"Long: {long_percentage}% | Short: {short_percentage}%")
             
-            if input_order == 'l':
-                status_order = status_options[1]  # Long
-            elif input_order == 's':
-                status_order = status_options[0]  # Short
-            elif input_order == 'm':  # New option for majority-based decision
-                if long_percentage > short_percentage:
-                    status_order = status_options[1]  # Long
-                    print_(f"Choosing Long position based on majority sentiment ({long_percentage}% > {short_percentage}%)")
-                else:
-                    status_order = status_options[0]  # Short
-                    print_(f"Choosing Short position based on majority sentiment ({short_percentage}% > {long_percentage}%)")
-            elif input_order == 'c':  # New option for counter-majority decision
-                if long_percentage > short_percentage:
-                    status_order = status_options[0]  # Short
-                    print_(f"Choosing Short position against majority sentiment ({long_percentage}% > {short_percentage}%)")
-                else:
-                    status_order = status_options[1]  # Long
-                    print_(f"Choosing Long position against majority sentiment ({short_percentage}% > {long_percentage}%)")
-            else:
-                status_order = random.choice(status_options)  # Random
-        else:
-            print_("Failed to get sentiment data, using random choice")
-            status_order = random.choice(status_options)
+            status_order = self._determine_position(input_order, long_percentage, short_percentage)
+            
+            payload = {
+                'coinId': coins['id'],
+                'short': status_order,
+                'periodId': period_id
+            }
+            
+            return self.post_order(payload)
+            
+        except Exception as e:
+            print_(f"Error opening new position: {str(e)}")
+            return None
 
-        coin_id = coins.get('id')
-        payload = {'coinId': coin_id, 'short': status_order, 'periodId': period_id}
-        return self.post_order(payload)
+    def _determine_position(self, input_order, long_percentage, short_percentage):
+        if input_order == 'l':
+            return False  # Long
+        elif input_order == 's':
+            return True   # Short
+        elif input_order == 'm':
+            return short_percentage > long_percentage
+        elif input_order == 'c':
+            return long_percentage > short_percentage
+        else:
+            return random.choice([True, False])
+
+def process_account(account_data):
+    try:
+        query, index, total_accounts, input_coin, input_order, auto_claim, proxies = account_data
+        
+        print_(f"========= Account {index}/{total_accounts} =========")
+        
+        if not query:
+            print_("Invalid query data")
+            return
+            
+        ether = Ether()
+        
+        # Setup proxy if available
+        if proxies:
+            proxy = random.choice(proxies)
+            ether.proxy_dict = format_proxy(proxy)
+            print_(f"Selected proxy: {proxy}")
+            
+            # Verify proxy
+            ip, country = get_ip_info(ether.proxy_dict)
+            print_(f"Current IP: {ip} | Country: {country}")
+        
+        # Initialize session
+        token = ether.get_token(query)
+        if not token:
+            print_("Failed to get authentication token")
+            return
+            
+        # Get user info
+        user_info = ether.get_user_info()
+        if user_info:
+            print_(f"TGID: {user_info.get('tgId','')} | Username: {user_info.get('tgUsername','None')} | Balance: {user_info.get('balance',0)}")
+        
+        # Process daily tasks
+        ether.daily_bonus()
+        ether.claim_ref()
+        
+        # Get and process orders
+        data_order = ether.get_order()
+        if not data_order:
+            print_("Failed to get order data")
+            return
+            
+        process_orders(ether, data_order, input_coin, input_order, auto_claim)
+        
+        # Check remaining tasks
+        ether.check_tasks()
+        
+    except Exception as e:
+        print_(f"Error processing account: {str(e)}")
+
+def process_orders(ether, data_order, input_coin, input_order, auto_claim):
+    try:
+        results = data_order.get('results', {})
+        print_(f"Game Results: {results.get('orders',0)} Orders | {results.get('wins',0)} Wins | {results.get('loses',0)} Loses | {results.get('winRate',0.0)}% Winrate")
+        
+        total_score = data_order.get('totalScore', 0)
+        periods = data_order.get('periods', [])
+        detail_coin = ether.get_coins(input_order)
+        
+        if not detail_coin:
+            print_("Failed to get coin details")
+            return
+            
+        for period_data in periods:
+            period = period_data.get('period', {})
+            if not period:
+                continue
+                
+            unlock_threshold = period.get('unlockThreshold', 0)
+            current_order = period_data.get('order', {})
+            period_id = period.get('id')
+            
+            if total_score >= unlock_threshold:
+                if auto_claim and current_order:
+                    ether.process_order(current_order, detail_coin, input_coin, input_order, period_id)
+                elif not current_order:
+                    ether.open_new_position(detail_coin, input_coin, input_order, period_id)
+                    
+    except Exception as e:
+        print_(f"Error processing orders: {str(e)}")
+
 def test_proxy(proxy_dict):
     if not proxy_dict:
         return False
@@ -354,110 +483,59 @@ def test_proxy(proxy_dict):
         print_(f"Proxy test failed: {str(e)}")
         return False
 
-
-def process_account(account_data):
-    query, index, total_accounts, input_coin, input_order, auto_claim, proxies = account_data
-    
-    print_(f"SxG========= Account {index}/{total_accounts} =========SxG")
-    
-    # Setup proxy
-    if proxies:
-        proxy = random.choice(proxies)
-        proxy_dict = format_proxy(proxy)
-        print_(f"Selected proxy: {proxy}")
-    else:
-        proxy_dict = None
-    
-    # Create Ether instance with proxy
-    ether = Ether()
-    ether.proxy_dict = proxy_dict
-    
-    # Check IP using proxy
-    ip, country = get_ip_info(proxy_dict)
-    print_(f"Current IP: {ip} | Country: {country}")
-    
-    token = ether.get_token(query)
-    if token is not None:
-        user_info = ether.get_user_info()
-        print_(f"TGID : {user_info.get('tgId','')} | Username : {user_info.get('tgUsername','None')} | Balance : {user_info.get('balance',0)}")
-        ether.daily_bonus()
-        ether.claim_ref()
-        data_order = ether.get_order()
-
-        if data_order is not None:
-            totalScore = data_order.get('totalScore', 0)
-            results = data_order.get('results', {})
-            print_(f"Result Game : {results.get('orders',0)} Order | {results.get('wins',0)} Wins | {results.get('loses',0)} Loses | {results.get('winRate',0.0)} Winrate")
-            
-            list_periods = data_order.get('periods', [])
-            detail_coin = ether.get_coins(input_order)
-
-            for period_data in list_periods:
-                period = period_data.get('period', {})
-                unlock_threshold = period.get('unlockThreshold', 0)
-                current_order = period_data.get('order', {})
-                period_id = period.get('id', 1)
-
-                if totalScore >= unlock_threshold:
-                    if auto_claim and current_order:
-                        ether.process_order(current_order, detail_coin, input_coin, input_order, period_id)
-                    elif not current_order:
-                        ether.open_new_position(detail_coin, input_coin, input_order, period_id)
-        
-        ether.check_tasks()
-
 def main():
-    input_coin = input("random choice coin y/n (BTC default)  : ").strip().lower()
-    input_order = input("open order l(long), s(short), r(random), m(majority), c(counter-majority)  : ").strip().lower()
-    auto_claim = input("Enable auto-claim and reopen (y/n): ").strip().lower() == 'y'
-    
-    # New prompt for number of threads
-    while True:
-        try:
-            num_threads = int(input("Enter number of threads (1-10): ").strip())
-            if 1 <= num_threads <= 10:
-                break
-            print_("Please enter a number between 1 and 10")
-        except ValueError:
-            print_("Please enter a valid number")
-    
-    while True:
-        start_time = time.time()
-        clear_terminal()
-        queries = load_query()
-        proxies = load_proxies()
-        total_accounts = len(queries)
-        
-        # Adjust number of threads if more than accounts
-        actual_threads = min(num_threads, total_accounts)
-        if actual_threads < num_threads:
-            print_(f"Adjusting to {actual_threads} threads as there are only {total_accounts} accounts")
-        
-        # Prepare account data for threading
-        account_data = [
-            (query, idx + 1, total_accounts, input_coin, input_order, auto_claim, proxies)
-            for idx, query in enumerate(queries)
-        ]
-        
-        # Process accounts in parallel
-        with ThreadPoolExecutor(max_workers=actual_threads) as executor:
-            list(executor.map(process_account, account_data))
-        
-        end_time = time.time()
-        processing_time = end_time - start_time
-        delay = 24 * 3600 - processing_time
-        
-        if delay > 0:
-            print_delay(delay)
-        else:
-            print_("Processing took longer than 24 hours. Starting next cycle immediately.")
-
-if __name__ == "__main__":
     try:
-        main()
+        input_coin = input("Random choice coin y/n (BTC default): ").strip().lower()
+        input_order = input("Open order l(long), s(short), r(random), m(majority), c(counter-majority): ").strip().lower()
+        auto_claim = input("Enable auto-claim and reopen (y/n): ").strip().lower() == 'y'
+        
+        while True:
+            try:
+                num_threads = int(input("Enter number of threads (1-10): ").strip())
+                if 1 <= num_threads <= 10:
+                    break
+                print_("Please enter a number between 1 and 10")
+            except ValueError:
+                print_("Please enter a valid number")
+        
+        while True:
+            start_time = time.time()
+            clear_terminal()
+            
+            queries = load_query()
+            if not queries:
+                print_("No queries loaded. Please check ether_query.txt")
+                return
+                
+            proxies = load_proxies()
+            total_accounts = len(queries)
+            
+            actual_threads = min(num_threads, total_accounts)
+            if actual_threads < num_threads:
+                print_(f"Adjusting to {actual_threads} threads as there are only {total_accounts} accounts")
+            
+            account_data = [
+                (query, idx + 1, total_accounts, input_coin, input_order, auto_claim, proxies)
+                for idx, query in enumerate(queries)
+            ]
+            
+            with ThreadPoolExecutor(max_workers=actual_threads) as executor:
+                list(executor.map(process_account, account_data))
+            
+            end_time = time.time()
+            delay = 7200 - (end_time - start_time)
+            
+            if delay > 0:
+                print_delay(delay)
+            else:
+                print_("Processing took longer than expected. Starting next cycle immediately.")
+                
     except KeyboardInterrupt:
         print_("\nScript terminated by user")
         sys.exit(0)
     except Exception as e:
         print_(f"An unexpected error occurred: {str(e)}")
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()

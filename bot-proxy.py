@@ -85,7 +85,7 @@ def get_ip_info(proxy_dict=None):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         response = requests.get(
-            'http://ip-api.com/json', 
+            'https://api.country.is/', 
             headers=headers,
             proxies=proxy_dict, 
             timeout=30,
@@ -165,18 +165,22 @@ class Ether:
     def __init__(self):
         self.header = {
             "accept": "application/json",
+            "accept-encoding": "gzip, deflate, br, zstd",
             "accept-language": "en-US,en;q=0.9",
             "content-type": "application/json",
+            "origin": "https://miniapp.dropstab.com",
             "priority": "u=1, i",
-            "sec-ch-ua": '"Microsoft Edge;v=129, Not=A?Brand;v=8, Chromium;v=129, Microsoft Edge WebView2;v=129"',
+            "referer": "https://miniapp.dropstab.com/",
+            "sec-ch-ua": '"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99", "Microsoft Edge WebView2";v="130"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-site",
-            "Referer": "https://mdkefjwsfepf.dropstab.com/",
-            "Referrer-Policy": "strict-origin-when-cross-origin"
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
         }
+        self.token = None
+        self.proxy_dict = None
         self.token = None
         self.proxy_dict = None
 
@@ -218,7 +222,11 @@ class Ether:
     def get_user_info(self):
         return self._make_authenticated_request("GET", "/user/current")
 
-    def daily_bonus(self):
+    def daily_bonus(self, auto_tasks):
+        if not auto_tasks:
+            print_("Daily bonus skipped - auto tasks disabled")
+            return
+            
         response = self._make_authenticated_request("POST", "/bonus/dailyBonus")
         if response is not None:
             result = response.get('result', False)
@@ -227,7 +235,11 @@ class Ether:
             else:
                 print_("Daily Bonus Claimed")
 
-    def check_tasks(self):
+    def check_tasks(self, auto_tasks):
+        if not auto_tasks:
+            print_("Tasks check skipped - auto tasks disabled")
+            return
+            
         tasks = self._make_authenticated_request("GET", "/quest")
         if tasks is None:
             return
@@ -265,7 +277,11 @@ class Ether:
         if response is not None:
             print_(f"Claim Task {name}: {response.get('status', '')}")
 
-    def claim_ref(self):
+    def claim_ref(self, auto_tasks):
+        if not auto_tasks:
+            print_('Referral claim skipped - auto tasks disabled')
+            return
+            
         print_('Claim Reff Reward')
         response = self._make_authenticated_request('POST', '/refLink/claim')
         if response is not None:
@@ -379,7 +395,7 @@ class Ether:
 
 def process_account(account_data):
     try:
-        query, index, total_accounts, input_coin, input_order, auto_claim, proxies = account_data
+        query, index, total_accounts, input_coin, input_order, auto_claim, auto_tasks, proxies = account_data
         
         print_(f"========= Account {index}/{total_accounts} =========")
         
@@ -410,9 +426,9 @@ def process_account(account_data):
         if user_info:
             print_(f"TGID: {user_info.get('tgId','')} | Username: {user_info.get('tgUsername','None')} | Balance: {user_info.get('balance',0)}")
         
-        # Process daily tasks
-        ether.daily_bonus()
-        ether.claim_ref()
+        # Process daily tasks if enabled
+        ether.daily_bonus(auto_tasks)
+        ether.claim_ref(auto_tasks)
         
         # Get and process orders
         data_order = ether.get_order()
@@ -422,8 +438,8 @@ def process_account(account_data):
             
         process_orders(ether, data_order, input_coin, input_order, auto_claim)
         
-        # Check remaining tasks
-        ether.check_tasks()
+        # Check remaining tasks if enabled
+        ether.check_tasks(auto_tasks)
         
     except Exception as e:
         print_(f"Error processing account: {str(e)}")
@@ -488,6 +504,7 @@ def main():
         input_coin = input("Random choice coin y/n (BTC default): ").strip().lower()
         input_order = input("Open order l(long), s(short), r(random), m(majority), c(counter-majority): ").strip().lower()
         auto_claim = input("Enable auto-claim and reopen (y/n): ").strip().lower() == 'y'
+        auto_tasks = input("Enable auto-complete tasks (y/n): ").strip().lower() == 'y'
         
         while True:
             try:
@@ -515,7 +532,7 @@ def main():
                 print_(f"Adjusting to {actual_threads} threads as there are only {total_accounts} accounts")
             
             account_data = [
-                (query, idx + 1, total_accounts, input_coin, input_order, auto_claim, proxies)
+                (query, idx + 1, total_accounts, input_coin, input_order, auto_claim, auto_tasks, proxies)
                 for idx, query in enumerate(queries)
             ]
             

@@ -108,7 +108,7 @@ def make_request(method, url, headers, json=None, data=None, proxy_dict=None):
             kwargs = {
                 'headers': headers,
                 'proxies': proxy_dict,
-                'timeout': 30,
+                'timeout': 60,
                 'verify': False
             }
             
